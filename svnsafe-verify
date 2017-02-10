@@ -1,0 +1,54 @@
+#!/bin/bash
+set -e
+
+tmpd=$(mktemp -d)
+trap 'rm -rf "$tmpd"' EXIT
+
+usage () {
+  echo "usage: $(basename "$0") path/to/full.git"
+  exit
+}
+
+warn () {
+  echo "$@" >&2
+}
+
+getsvnrev () {
+  git log -1 "$1" | awk '$1 == "git-svn-id:" {print $2}' | cut -d@ -f2
+                    #perl -ne 'print $1 if /^\s*git-svn-id:.*@(\d+)/'
+}
+
+getgittree () {
+  git rev-parse "$1"^{tree}
+}
+
+rf () ( cd "$1"; shift; "$@" )
+
+full=$1
+
+[[ $full = *.git ]] || usage
+[[ -d $full ]] || usage
+
+fqfull=$(readlink -f "$full")
+
+tips=$tmpd/tips.git
+
+git init --bare -q "$tips"
+cp "$full"/config "$tips"
+cp "$full"/authors.txt "$tips" 2>/dev/null || :
+
+cd "$full"
+branches=$( git branch | cut -c3- | grep -v @ )
+
+for b in $branches; do
+  tree=$(getgittree $b)
+  rev=$(getsvnrev $b)
+  rf "$tips" git svn fetch -q -r "$rev" &> /dev/null
+  tree2=$(rf "$tips" getgittree $b)
+  if [[ $tree = "$tree2" ]]; then
+    echo "tree match for branch '$b' @ r$rev"
+  else
+    warn "*** tree mismatch for branch '$b' @ r$rev"
+  fi
+done
+
