@@ -2,207 +2,100 @@
 
 """
 Usage:
-  %s [3.4|3.5] [el6|el7] [development|testing|release]
+  {script} [3.X|upcoming]  [elY]  [development|testing|release]
 Or:
-  %s [devops]  [el7]     [itb|production]
+  {script} [devops]        [elY]  [itb|production]
 
 Default is:
-  %s el%s %s
+  {series} el{el} {tag}
 
 Options:
-  --make-cache     save epelX.html and osg-3.X-elX-XXX.list for offline use
-  --cached         used cached files instead of pulling live versions
   --[no-]color     colorize version differences (default = True if tty)
   --html           generate html output (implies --color)
   --preamble=text  print some preamble text before the report
   --show-all       show versions even for non-outdated packages
 """
 
+import outdated_pkgs_diff
+import epel_pkgs
+import osg_pkgs
+
 import sys
 import os
 import re
-import rpm
-import urllib2
-try:
-    from rpmUtils.miscutils import stringToVersion
-except ImportError:
-    from miscutils import stringToVersion
 
 
-SERIES = '3.5'
-EL     = '7'
-TAG    = 'release'
+class Options(outdated_pkgs_diff.Options):
+    series     = '3.5'
+    el         = '7'
+    tag        = 'release'
+    tag_fmt    = "osg-{series}-el{el}-{tag}"
 
-use_cached = False
-make_cache = False
-use_color  = sys.stdout.isatty()
-show_all   = False
-html_out   = False
-preamble   = None
+    def _asdict(o):
+        return { k: getattr(o,k) for k in dir(o) if not k.startswith('_') }
 
-def usage():
+def usage(ops):
     script = os.path.basename(__file__)
-    print __doc__ % (script, script, SERIES, EL, TAG)
+    print __doc__.format(script=script, **ops._asdict())
     sys.exit()
 
-for arg in sys.argv[1:]:
-    if re.search(r'^el[5-9]$', arg):
-        EL = arg[2]
-    elif re.search(r'^[3-9]\.[0-9]$', arg) or arg == 'devops':
-        SERIES = arg
-    elif re.search(r'^(upcoming-)?(development|testing|release)$', arg) \
-         or arg in ('itb', 'production'):
-        TAG = arg
-    elif arg == '--cached':
-        use_cached = True
-    elif arg == '--make-cache':
-        make_cache = True
-    elif arg == '--color':
-        use_color = True
-    elif arg == '--no-color':
-        use_color = False
-    elif arg == '--html':
-        html_out = True
-        use_color = True
-    elif arg.startswith('--preamble='):
-        preamble = arg[len('--preamble='):]
-    elif arg == '--show-all':
-        show_all = True
-    else:
-        usage()
 
-if use_cached and make_cache:
-    usage()
+def is_el(arg):
+    return re.search(r'^el[5-9]$', arg)
 
-if SERIES == 'devops' and TAG == 'release':
-    TAG = 'production'
+def is_series(arg):
+    return re.search(r'^[3-9]\.[0-9]$', arg) or arg in ('devops', 'upcoming')
 
-def strip_dist_tag(seq, dist_pfx):
-    pat = r'\.%s[^-]*$' % dist_pfx
-    return [ re.sub(pat, '', nvr) for nvr in seq ]
+def is_tag(arg):
+    return arg in ('development', 'testing', 'release', 'itb', 'production')
 
-def extract_href_rpm(line):
-    m = re.search(r'<a href="([^"]+(-[^-"]+){2})\.src\.rpm"', line)
-    if m:
-        return m.groups()[0]
-    m = re.search(r'<a href="(\w)/"', line)
-    if m:
-        return get_epel_list(m.groups()[0])
+def is_preamble(arg):
+    return arg.startswith('--preamble=')
 
-def get_handle(fn, arg, cache_name):
-    if use_cached:
-        handle = open(cache_name)
-    else:
-        handle = fn(arg)
-        if make_cache:
-            open(cache_name, 'w').write(handle.read())
-            print "Wrote:", cache_name
-            handle = []
+def get_preamble(arg):
+    return arg[len('--preamble='):]
 
-    return handle
 
-def get_epel_list(subdir=None):
-    epel_url = "http://dl.fedoraproject.org/pub/epel/%s/SRPMS/Packages/" % EL
-    if subdir is None:
-        cache_name = 'epel%s.html' % EL
-    else:
-        cache_name = 'epel%s_%s.html' % (EL,subdir)
-        epel_url += "%s/" % subdir
+def parseargs(args):
+    ops = Options()
+    for arg in args:
+        if   is_el(arg)          : ops.el        = arg[2]
+        elif is_series(arg)      : ops.series    = arg
+        elif is_tag(arg)         : ops.tag       = arg
+        elif is_preamble(arg)    : ops.preamble  = get_preamble(arg)
+        elif arg == '--show-all' : ops.show_all  = True
+        elif arg == '--color'    : ops.use_color = True
+        elif arg == '--no-color' : ops.use_color = False
+        elif arg == '--html'     : ops.use_color = ops.html_out = True
+        else                     : usage(ops)
 
-    handle = get_handle(urllib2.urlopen, epel_url, cache_name)
+    if ops.series == 'devops':
+        ops.tag_fmt = "{series}-el{el}-{tag}"
+        if ops.tag == 'release':
+            ops.tag = 'production'
 
-    nvrs = filter(None, map(extract_href_rpm, handle))
-    if nvrs and type(nvrs[0]) is list:
-        nvrs = [ nvr for nvrlist in nvrs for nvr in nvrlist ]
-    return strip_dist_tag(nvrs, 'el%s' % EL)
+    ops.osg_tag = ops.tag_fmt.format(**ops._asdict())
 
-def get_osg_list():
-    if SERIES == 'devops':
-        osg_tag = "%s-el%s-%s" % (SERIES, EL, TAG)
-    else:
-        osg_tag = "osg-%s-el%s-%s" % (SERIES, EL, TAG)
-    cmd = "osg-koji list-tagged --latest --rpms %s" % osg_tag
-    cache_name = osg_tag + '.list'
+    return ops
 
-    handle = get_handle(os.popen, cmd, cache_name)
 
-    nvrs = [ line[:-5] for line in handle if line.endswith(".src\n") ]
-    return strip_dist_tag(nvrs, 'osg')
+def main(args):
+    ops = parseargs(args)
 
-def rpmvercmp(a,b):
-    return rpm.labelCompare(*[stringToVersion(x) for x in (a,b)])
+    epel_list     = epel_pkgs.get_epel_list(ops.el)
+    epel_label    = "EPEL " + ops.el
+    epel_dist_pfx = 'el' + ops.el
 
-def n_vr(nvr):
-    n,v,r = nvr.rsplit("-",2)
-    return n, v+'-'+r
+    osg_list      = osg_pkgs.get_osg_list(ops.osg_tag)
+    osg_label     = "OSG " + ops.series.capitalize()
+    osg_dist_pfx  = 'osg'
 
-def nvrmap(seq):
-    return dict( n_vr(nvr) for nvr in seq )
+    upstream   = epel_list, epel_label, epel_dist_pfx
+    downstream = osg_list,  osg_label,  osg_dist_pfx
 
-if make_cache:
-    get_epel_list()
-    get_osg_list()
-    sys.exit()
+    outdated_pkgs_diff.main(downstream, upstream, ops)
 
-epel_map = nvrmap(get_epel_list())
-osg_map  = nvrmap(get_osg_list())
 
-def colorize(color, *seq):
-    return [ "\x1b[%sm%s\x1b[0m" % (color, x) for x in seq ]
-
-def colorize_vr(vr1, vr2):
-    v1,r1 = vr1.split('-')
-    v2,r2 = vr2.split('-')
-
-    if v1 != v2:
-        v1,v2 = colorize('1;32', v1, v2)
-    elif r1 != r2:
-        r1,r2 = colorize('1;34', r1, r2)
-
-    return map('-'.join, [[v1,r1],[v2,r2]])
-
-def colorize_html(color, *seq):
-    return [ '<span class="%s">%s</span>' % (color, x) for x in seq ]
-
-def colorize_html_vr(vr1, vr2):
-    v1,r1 = vr1.split('-')
-    v2,r2 = vr2.split('-')
-
-    if v1 != v2:
-        v1,v2 = colorize_html('vdiff', v1, v2)
-    elif r1 != r2:
-        r1,r2 = colorize_html('rdiff', r1, r2)
-
-    return map('-'.join, [[v1,r1],[v2,r2]])
-
-if html_out:
-    colorize_vr = colorize_html_vr
-    print ("<html>\n<head>\n<style type='text/css'>\n.vdiff {color:green}\n"
-           ".rdiff {color:blue}\n</style>\n</head>\n<body>\n<pre>")
-
-if preamble:
-    print preamble
-    print
-
-pkg_diffs = []
-for pkg in sorted(osg_map):
-    if pkg in epel_map:
-        vrcmp = rpmvercmp(osg_map[pkg], epel_map[pkg])
-        if vrcmp < 0 or show_all:
-            pkg_diffs.append([pkg, osg_map[pkg], epel_map[pkg]])
-
-if pkg_diffs:
-    pkg_diffs[:0] = [["Package", "OSG " + SERIES, "EPEL " + EL]]
-    widths = [ max(map(len,col)) for col in zip(*pkg_diffs) ]
-    pkg_diffs[1:1] = [[ '-' * n for n in widths ]]
-    for i,row in enumerate(pkg_diffs):
-        spacing = [ w-len(x) for x,w in zip(row,widths) ]
-        if use_color and i > 1:
-            row[1:] = colorize_vr(*row[1:])
-        print '  '.join( r + ' ' * s for r,s in zip(row,spacing) ).rstrip()
-else:
-    print "No package version differences"
-
-if html_out:
-    print "</pre>\n</body>\n</html>"
+if __name__ == '__main__':
+    main(sys.argv[1:])
 
