@@ -4,6 +4,14 @@ import re
 import urllib2
 
 
+def get_epel_pkgs_url(el):
+    if int(el) < 7:
+        return ("https://archives.fedoraproject.org"
+                "/pub/archive/epel/%s/SRPMS/Packages/") % el
+    else:
+        return "http://dl.fedoraproject.org/pub/epel/%s/SRPMS/Packages/" % el
+
+
 def extract_href_rpm(line, el):
     m = re.search(r'<a href="([^"]+(-[^-"]+){2})\.src\.rpm"', line)
     if m:
@@ -14,7 +22,8 @@ def extract_href_rpm(line, el):
 
 
 def get_epel_list(el, subdir=None):
-    epel_url = "http://dl.fedoraproject.org/pub/epel/%s/SRPMS/Packages/" % el
+    epel_url = get_epel_pkgs_url(el)
+
     if subdir is not None:
         epel_url += "%s/" % subdir
 
